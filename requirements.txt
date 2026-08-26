@@ -1,4 +1,4 @@
-fastapi==0.115.6
-uvicorn[standard]==0.34.0
-duckdb==1.1.3
-pandas==2.2.3
+fastapi==0.110.0
+uvicorn[standard]==0.27.1
+duckdb==0.10.0
+pandas==2.2.1          # duckdb .df() के लिए
