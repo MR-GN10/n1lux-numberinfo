@@ -1,14 +1,36 @@
+import logging
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 import duckdb
 
+# Setup logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 app = FastAPI()
 
-con = duckdb.connect()
-con.execute("INSTALL httpfs;")
-con.execute("LOAD httpfs;")
+# Global DuckDB connection – will be initialized on startup
+con = None
 
+@app.on_event("startup")
+async def startup_event():
+    global con
+    try:
+        con = duckdb.connect()
+        # Attempt to install and load httpfs for advanced features
+        # If it fails, read_parquet will still work for HTTPS URLs (DuckDB >= 0.8.0)
+        con.execute("INSTALL httpfs;")
+        con.execute("LOAD httpfs;")
+        logger.info("DuckDB initialized with httpfs extension.")
+    except Exception as e:
+        logger.warning(f"httpfs extension not available, falling back to built‑in HTTPS support: {e}")
+        # Still keep the connection (it works without httpfs)
+        if con is None:
+            con = duckdb.connect()
+        logger.info("DuckDB initialized without httpfs.")
+
+# HTML landing page (unchanged)
 LANDING_PAGE_HTML = """
 <!DOCTYPE html>
 <html lang="en">
@@ -91,6 +113,7 @@ LANDING_PAGE_HTML = """
 </html>
 """
 
+# Exception handler for 404 – returns custom JSON
 @app.exception_handler(StarletteHTTPException)
 async def custom_http_exception_handler(request: Request, exc: StarletteHTTPException):
     if exc.status_code == 404:
@@ -107,12 +130,15 @@ async def custom_http_exception_handler(request: Request, exc: StarletteHTTPExce
         content={"detail": exc.detail, "Developer": "@Maybechx"}
     )
 
+# Root endpoint – landing page
 @app.get("/", response_class=HTMLResponse)
 def root_landing_page():
     return HTMLResponse(content=LANDING_PAGE_HTML, status_code=200)
 
+# Main data endpoint
 @app.get("/FetchData")
 def fetch_data(Number: str = Query(None)):
+    # Input validation
     if not Number or not Number.isdigit() or len(Number) < 10 or len(Number) > 15:
         return JSONResponse(
             status_code=400,
@@ -122,56 +148,63 @@ def fetch_data(Number: str = Query(None)):
                 "Developer": "@Maybechx"
             }
         )
-    
+
     last_digit = Number[-1]
-    
     primary_url = f"https://huggingface.co/datasets/CutehackX/hitek-data-bucket/resolve/main/final_master_shard_{last_digit}.parquet"
     alt_url = f"https://huggingface.co/datasets/CutehackX/hitek-data-bucket/resolve/main/alt_master_shard_{last_digit}.parquet"
-    
+
     try:
+        # Use the global connection; if None, recreate (should not happen after startup)
+        if con is None:
+            logger.warning("Connection is None, reconnecting...")
+            global con
+            con = duckdb.connect()
+            con.execute("INSTALL httpfs;")
+            con.execute("LOAD httpfs;")
+
         query = f"""
             SELECT *, 'Main' AS _record_type FROM read_parquet('{primary_url}') WHERE mobile = '{Number}'
             UNION ALL
             SELECT *, 'Alt' AS _record_type FROM read_parquet('{alt_url}') WHERE alt = '{Number}'
         """
-        
+        logger.info(f"Executing query for number: {Number}")
         raw_results = con.execute(query).df().to_dict(orient="records")
-        
+
         main_records = []
         alt_records = []
-        
         for row in raw_results:
             rec_type = row.pop('_record_type')
             if rec_type == 'Main':
                 main_records.append(row)
             else:
                 alt_records.append(row)
-        
+
         if not main_records and not alt_records:
             return JSONResponse(
                 status_code=404,
                 content={
-                    "status": "not_found", 
+                    "status": "not_found",
                     "phone": Number,
                     "Developer": "@Maybechx"
                 }
             )
-            
+
         return {
-            "status": "success", 
+            "status": "success",
             "Data": {
                 "Main_Records": main_records,
                 "Alt_Records": alt_records
             },
             "Developer": "@Maybechx"
         }
-        
+
     except Exception as e:
+        logger.error(f"Error processing number {Number}: {e}", exc_info=True)
         return JSONResponse(
             status_code=500,
             content={
                 "status": "error",
-                "message": f"Database processing error: {str(e)}",
+                "message": "Internal server error. Please check logs.",
                 "Developer": "@Maybechx"
             }
         )
