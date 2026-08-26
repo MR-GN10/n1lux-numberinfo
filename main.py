@@ -138,6 +138,9 @@ def root_landing_page():
 # Main data endpoint
 @app.get("/FetchData")
 def fetch_data(Number: str = Query(None)):
+    # IMPORTANT: declare global con before using it
+    global con
+
     # Input validation
     if not Number or not Number.isdigit() or len(Number) < 10 or len(Number) > 15:
         return JSONResponse(
@@ -154,10 +157,9 @@ def fetch_data(Number: str = Query(None)):
     alt_url = f"https://huggingface.co/datasets/CutehackX/hitek-data-bucket/resolve/main/alt_master_shard_{last_digit}.parquet"
 
     try:
-        # Use the global connection; if None, recreate (should not happen after startup)
+        # If connection is None (should not happen after startup), recreate it
         if con is None:
             logger.warning("Connection is None, reconnecting...")
-            global con
             con = duckdb.connect()
             con.execute("INSTALL httpfs;")
             con.execute("LOAD httpfs;")
