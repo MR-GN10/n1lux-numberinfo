@@ -15,10 +15,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Hugging Face Token – from environment or hardcoded fallback
-HF_TOKEN = os.getenv("HF_TOKEN", "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")
-
-# DuckDB connection (global)
+# DuckDB connection
 con = None
 
 @app.on_event("startup")
@@ -27,18 +24,7 @@ def startup():
     con = duckdb.connect()
     con.execute("INSTALL httpfs;")
     con.execute("LOAD httpfs;")
-    
-    if HF_TOKEN:
-        # Create a secret that adds the Authorization header to all HTTP requests
-        con.execute(f"""
-            CREATE SECRET hf_token (
-                TYPE HTTP,
-                HEADER 'Authorization' 'Bearer {HF_TOKEN}'
-            );
-        """)
-        print("✅ Hugging Face authentication configured via SECRET")
-    else:
-        print("⚠️ No HF_TOKEN found – trying without authentication")
+    print("✅ DuckDB with HTTPFS ready (no authentication)")
 
 @app.on_event("shutdown")
 def shutdown():
@@ -180,7 +166,7 @@ def fetch_data(Number: str = Query(None)):
         for row in main_rows:
             main_records.append(dict(zip(main_cols, row)))
     except Exception:
-        # Main table may not have 'mobile' column or file missing – ignore
+        # File missing or column absent – ignore
         pass
     
     try:
@@ -191,7 +177,6 @@ def fetch_data(Number: str = Query(None)):
         for row in alt_rows:
             alt_records.append(dict(zip(alt_cols, row)))
     except Exception:
-        # Alt table may not have 'alt' column or file missing – ignore
         pass
     
     if not main_records and not alt_records:
