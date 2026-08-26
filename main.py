@@ -1,14 +1,48 @@
+import os
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 from starlette.exceptions import HTTPException as StarletteHTTPException
 import duckdb
 
 app = FastAPI()
 
-con = duckdb.connect()
-con.execute("INSTALL httpfs;")
-con.execute("LOAD httpfs;")
+# CORS Middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["GET"],
+    allow_headers=["*"],
+)
 
+# Hugging Face Token from Environment
+HF_TOKEN = os.getenv("HF_TOKEN", "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")
+
+# DuckDB Connection
+con = None
+
+@app.on_event("startup")
+def startup():
+    global con
+    con = duckdb.connect()
+    con.execute("INSTALL httpfs;")
+    con.execute("LOAD httpfs;")
+    
+    # Hugging Face Authentication
+    if HF_TOKEN:
+        con.execute(f"SET GLOBAL http_headers = 'Authorization: Bearer {HF_TOKEN}';")
+        print("✅ Hugging Face authentication configured")
+    else:
+        print("⚠️ No HF_TOKEN found, trying without authentication")
+
+@app.on_event("shutdown")
+def shutdown():
+    global con
+    if con:
+        con.close()
+        print("✅ Database connection closed")
+
+# HTML Landing Page
 LANDING_PAGE_HTML = """
 <!DOCTYPE html>
 <html lang="en">
@@ -91,6 +125,7 @@ LANDING_PAGE_HTML = """
 </html>
 """
 
+# Exception Handler
 @app.exception_handler(StarletteHTTPException)
 async def custom_http_exception_handler(request: Request, exc: StarletteHTTPException):
     if exc.status_code == 404:
@@ -107,10 +142,12 @@ async def custom_http_exception_handler(request: Request, exc: StarletteHTTPExce
         content={"detail": exc.detail, "Developer": "@Maybechx"}
     )
 
+# Root Endpoint
 @app.get("/", response_class=HTMLResponse)
 def root_landing_page():
     return HTMLResponse(content=LANDING_PAGE_HTML, status_code=200)
 
+# Main Data Fetch Endpoint
 @app.get("/FetchData")
 def fetch_data(Number: str = Query(None)):
     if not Number or not Number.isdigit() or len(Number) < 10 or len(Number) > 15:
@@ -124,54 +161,51 @@ def fetch_data(Number: str = Query(None)):
         )
     
     last_digit = Number[-1]
-    
     primary_url = f"https://huggingface.co/datasets/CutehackX/hitek-data-bucket/resolve/main/final_master_shard_{last_digit}.parquet"
     alt_url = f"https://huggingface.co/datasets/CutehackX/hitek-data-bucket/resolve/main/alt_master_shard_{last_digit}.parquet"
     
+    main_records = []
+    alt_records = []
+    
     try:
-        query = f"""
-            SELECT *, 'Main' AS _record_type FROM read_parquet('{primary_url}') WHERE mobile = '{Number}'
-            UNION ALL
-            SELECT *, 'Alt' AS _record_type FROM read_parquet('{alt_url}') WHERE alt = '{Number}'
-        """
-        
-        raw_results = con.execute(query).df().to_dict(orient="records")
-        
-        main_records = []
-        alt_records = []
-        
-        for row in raw_results:
-            rec_type = row.pop('_record_type')
-            if rec_type == 'Main':
-                main_records.append(row)
-            else:
-                alt_records.append(row)
-        
-        if not main_records and not alt_records:
-            return JSONResponse(
-                status_code=404,
-                content={
-                    "status": "not_found", 
-                    "phone": Number,
-                    "Developer": "@Maybechx"
-                }
-            )
-            
-        return {
-            "status": "success", 
-            "Data": {
-                "Main_Records": main_records,
-                "Alt_Records": alt_records
-            },
-            "Developer": "@Maybechx"
-        }
-        
+        # Query Main Table
+        main_query = f"SELECT * FROM read_parquet('{primary_url}') WHERE mobile = '{Number}'"
+        main_res = con.execute(main_query)
+        main_cols = [desc[0] for desc in main_res.description] if main_res.description else []
+        main_rows = main_res.fetchall()
+        for row in main_rows:
+            main_records.append(dict(zip(main_cols, row)))
     except Exception as e:
+        # Main table may not have 'mobile' column or file missing
+        pass
+    
+    try:
+        # Query Alt Table
+        alt_query = f"SELECT * FROM read_parquet('{alt_url}') WHERE alt = '{Number}'"
+        alt_res = con.execute(alt_query)
+        alt_cols = [desc[0] for desc in alt_res.description] if alt_res.description else []
+        alt_rows = alt_res.fetchall()
+        for row in alt_rows:
+            alt_records.append(dict(zip(alt_cols, row)))
+    except Exception as e:
+        # Alt table may not have 'alt' column or file missing
+        pass
+    
+    if not main_records and not alt_records:
         return JSONResponse(
-            status_code=500,
+            status_code=404,
             content={
-                "status": "error",
-                "message": f"Database processing error: {str(e)}",
+                "status": "not_found",
+                "phone": Number,
                 "Developer": "@Maybechx"
             }
         )
+    
+    return {
+        "status": "success",
+        "Data": {
+            "Main_Records": main_records,
+            "Alt_Records": alt_records
+        },
+        "Developer": "@Maybechx"
+    }
