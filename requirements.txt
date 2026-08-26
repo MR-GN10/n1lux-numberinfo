@@ -1,0 +1,5 @@
+fastapi
+duckdb
+pandas
+uvicorn
+starlette
